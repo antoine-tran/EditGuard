@@ -322,7 +322,7 @@ class Model_VSN(BaseModel):
 
             self.optimizer_G.step()
 
-    def test(self, image_id, parent_dir="../dataset/valAGE-Set-Mask/"):
+    def test(self, image_id, masksrc="../dataset/valAGE-Set-Mask/"):
         self.netG.eval()
         add_noise = self.opt['addnoise']
         add_jpeg = self.opt['addjpeg']
@@ -392,7 +392,6 @@ class Model_VSN(BaseModel):
 
                 for j in range(b):
                     i = image_id + 1
-                    masksrc = "../dataset/valAGE-Set-Mask/"
                     mask_image = Image.open(masksrc + str(i).zfill(4) + ".png").convert("L")
                     mask_image = mask_image.resize((512, 512))
                     h, w = mask_image.size

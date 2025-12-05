@@ -590,6 +590,7 @@ class VSN(nn.Module):
             
             elif self.mode == "bit":
                 out_y = iwt(x)
+                raise ValueError(f"Debugging: out_y shape = {out_y.shape}, message shape = {message.shape}")
                 encoded_image = self.bitencoder(out_y, message)            
                 return out_y, encoded_image
             else:
