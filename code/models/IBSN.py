@@ -209,7 +209,7 @@ class Model_VSN(BaseModel):
 
         y_forw = container
 
-        l_forw_fit = self.loss_forward(y_forw, self.host[:,0])
+        l_forw_fit = self.loss_forward(y_forw, self.host[:, 0])
 
 
         if degrade_shuffle:

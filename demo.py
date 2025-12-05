@@ -116,9 +116,7 @@ for image_id, val_data in enumerate(dataloader):
 
     host = real_H[:,center:center + 1].squeeze(0)
     print(host.shape)
-    r = bitencoder(host, msg)
-    raise ValueError(f"Debugging: Type = {type(r)}, Length = {len(r)}")
-    output_y, _ = bitencoder(host, msg)
+    output_y = bitencoder(host, msg)
     output_y = torch.clamp(output_y, 0, 1)
     output_y = (output_y * 255.).round() / 255.
     
