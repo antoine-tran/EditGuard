@@ -69,7 +69,7 @@ network_G:
 path:
   pretrain_model_G:
   models: ckp/base
-  strict_load: true
+  strict_load: false
   resume_state: ~
 
 

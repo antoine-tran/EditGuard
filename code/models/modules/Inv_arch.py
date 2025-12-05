@@ -362,6 +362,12 @@ class InvNN(nn.Module):
         self.operations = nn.ModuleList(operations)
 
     def forward(self, x, x_h, rev: bool = False, cal_jacobian: bool = False):
+        # Handle list input for x_h (concatenate along batch or process separately)
+        if isinstance(x_h, list):
+            # If x_h is a list of tensors, concatenate them along channel dimension
+            # Each tensor in list should be (batch, C, H, W)
+            x_h = torch.cat(x_h, dim=1)
+        
         # 		out = x
         jacobian = 0
 
@@ -580,17 +586,15 @@ class VSN(nn.Module):
                 out_y, out_y_h, _ = self.irn(x, x_h, rev)
                 out_y = iwt(out_y)
                 encoded_image = self.bitencoder(out_y, message)          
-                # Return 4 values for consistency: (out_y, encoded_image, out_y_h, out_y_h)
-                return out_y, encoded_image, out_y_h, out_y_h
+                return out_y, encoded_image
             
             elif self.mode == "bit":
                 out_y = iwt(x)
                 encoded_image = self.bitencoder(out_y, message)            
-                # Return 4 values for consistency: (out_y, encoded_image, out_y, out_y)
-                return out_y, encoded_image, out_y, out_y
+                return out_y, encoded_image
             else:
                 # Should not reach here, but needed for TorchScript
-                return x, x, x, x
+                return x, x
 
         else:
             if self.mode == "image":
@@ -599,17 +603,26 @@ class VSN(nn.Module):
                 x_dwt = dwt(x)
                 out_z = self.pm(x_dwt).unsqueeze(1)
                 out_z_new = out_z.view(-1, self.num_image, self.channel_in, x_dwt.shape[-2], x_dwt.shape[-1])
-                # TorchScript-compatible: use unbind instead of list comprehension
-                out_z_list = torch.unbind(out_z_new, dim=1)
-                # Convert tuple to list for compatibility
-                out_z_new_list = list(out_z_list)
-                out_x, out_x_h, _ = self.irn(x_dwt, out_z_new_list[0] if len(out_z_new_list) > 0 else x_dwt, rev)
+                # Reshape from (batch, num_image, channel_in, h, w) to (batch, num_image*channel_in, h, w)
+                # by flattening batch and num_image dimensions, then concatenating channels
+                batch_size = out_z_new.shape[0]
+                out_z_flat = out_z_new.view(batch_size, self.num_image * self.channel_in, x_dwt.shape[-2], x_dwt.shape[-1])
+                out_x, out_x_h, _ = self.irn(x_dwt, out_z_flat, rev)
 
-                return out_x, out_x_h, out_z, recmessage
+                # Reshape out_x_h back to list of tensors for compatibility with IBSN.py
+                # out_x_h shape: (batch, num_image*channel_in, h, w)
+                # Reshape to: list of (batch, channel_in, h, w) tensors
+                out_x_h_list = []
+                for i in range(self.num_image):
+                    start_ch = i * self.channel_in
+                    end_ch = (i + 1) * self.channel_in
+                    out_x_h_list.append(out_x_h[:, start_ch:end_ch, :, :])
+
+                return out_x, out_x_h_list, out_z, recmessage
             
             elif self.mode == "bit":
                 recmessage = self.bitdecoder(x)
-                # Return 4 values for consistency
+                # Return 4 values for consistency with image mode
                 return recmessage, recmessage, recmessage, recmessage
             else:
                 # Should not reach here, but needed for TorchScript
