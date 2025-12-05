@@ -21,11 +21,15 @@ from models.bitnetwork.Decoder_U import DW_Decoder
 
 ## Layer Norm
 def to_3d(x):
-    return rearrange(x, 'b c h w -> b (h w) c')
+    # TorchScript-compatible replacement for rearrange(x, 'b c h w -> b (h w) c')
+    b, c, h, w = x.shape
+    return x.permute(0, 2, 3, 1).reshape(b, h * w, c)
 
 
-def to_4d(x, h, w):
-    return rearrange(x, 'b (h w) c -> b c h w', h=h, w=w)
+def to_4d(x, h: int, w: int):
+    # TorchScript-compatible replacement for rearrange(x, 'b (h w) c -> b c h w', h=h, w=w)
+    b, hw, c = x.shape
+    return x.reshape(b, h, w, c).permute(0, 3, 1, 2)
 
 
 class BiasFree_LayerNorm(nn.Module):
@@ -118,9 +122,11 @@ class Attention(nn.Module):
         qkv = self.qkv_dwconv(self.qkv(x))
         q, k, v = qkv.chunk(3, dim=1)
 
-        q = rearrange(q, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-        k = rearrange(k, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
-        v = rearrange(v, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
+        # TorchScript-compatible replacement for rearrange(q, 'b (head c) h w -> b head c (h w)', head=self.num_heads)
+        c_per_head = c // self.num_heads
+        q = q.reshape(b, self.num_heads, c_per_head, h * w)
+        k = k.reshape(b, self.num_heads, c_per_head, h * w)
+        v = v.reshape(b, self.num_heads, c_per_head, h * w)
 
         q = torch.nn.functional.normalize(q, dim=-1)
         k = torch.nn.functional.normalize(k, dim=-1)
@@ -130,7 +136,8 @@ class Attention(nn.Module):
 
         out = (attn @ v)
 
-        out = rearrange(out, 'b head c (h w) -> b (head c) h w', head=self.num_heads, h=h, w=w)
+        # TorchScript-compatible replacement for rearrange(out, 'b head c (h w) -> b (head c) h w', head=self.num_heads, h=h, w=w)
+        out = out.reshape(b, self.num_heads * c_per_head, h, w)
 
         out = self.project_out(out)
         return out
@@ -191,7 +198,13 @@ class LayerNorm2d(nn.Module):
         self.eps = eps
 
     def forward(self, x):
-        return LayerNormFunction.apply(x, self.weight, self.bias, self.eps)
+        # TorchScript-compatible version without custom autograd function
+        N, C, H, W = x.size()
+        mu = x.mean(1, keepdim=True)
+        var = (x - mu).pow(2).mean(1, keepdim=True)
+        y = (x - mu) / (var + self.eps).sqrt()
+        y = self.weight.view(1, C, 1, 1) * y + self.bias.view(1, C, 1, 1)
+        return y
 
 class SimpleGate(nn.Module):
     def forward(self, x):
@@ -297,6 +310,9 @@ class InvBlock(nn.Module):
         self.split_len1 = channel_num_ho  # channel_split_num
         self.split_len2 = channel_num_hi  # channel_num - channel_split_num
         self.clamp = clamp
+        
+        # Initialize s as a buffer for TorchScript compatibility
+        self.register_buffer('s', torch.zeros(1))
 
         self.F = subnet_constructor_v2(self.split_len2, self.split_len1, groups=groups)
         self.NF = NAFBlock(self.split_len2)
@@ -311,19 +327,19 @@ class InvBlock(nn.Module):
             self.H = subnet_constructor(self.split_len1, self.split_len2)
             self.NH = NAFBlock(self.split_len1)
 
-    def forward(self, x1, x2, rev=False):
+    def forward(self, x1, x2, rev: bool = False):
         if not rev:
             y1 = x1 + self.NF(self.F(x2))
             self.s = self.clamp * (torch.sigmoid(self.NH(self.H(y1))) * 2 - 1)
-            y2 = [x2i.mul(torch.exp(self.s)) + self.NG(self.G(y1)) for x2i in x2]
+            y2 = x2.mul(torch.exp(self.s)) + self.NG(self.G(y1))
         else:
             self.s = self.clamp * (torch.sigmoid(self.NH(self.H(x1))) * 2 - 1)
-            y2 = [(x2i - self.NG(self.G(x1))).div(torch.exp(self.s)) for x2i in x2]
+            y2 = (x2 - self.NG(self.G(x1))).div(torch.exp(self.s))
             y1 = x1 - self.NF(self.F(y2))
 
         return y1, y2  # torch.cat((y1, y2), 1)
 
-    def jacobian(self, x, rev=False):
+    def jacobian(self, x, rev: bool = False):
         if not rev:
             jac = torch.sum(self.s)
         else:
@@ -345,7 +361,7 @@ class InvNN(nn.Module):
 
         self.operations = nn.ModuleList(operations)
 
-    def forward(self, x, x_h, rev=False, cal_jacobian=False):
+    def forward(self, x, x_h, rev: bool = False, cal_jacobian: bool = False):
         # 		out = x
         jacobian = 0
 
@@ -355,15 +371,17 @@ class InvNN(nn.Module):
                 if cal_jacobian:
                     jacobian += op.jacobian(x, rev)
         else:
-            for op in reversed(self.operations):
+            # TorchScript doesn't support reversed() or dynamic indexing on ModuleList
+            # Convert to list and reverse it
+            ops_list = list(self.operations)
+            ops_list.reverse()
+            for op in ops_list:
                 x, x_h = op.forward(x, x_h, rev)
                 if cal_jacobian:
                     jacobian += op.jacobian(x, rev)
 
-        if cal_jacobian:
-            return x, x_h, jacobian
-        else:
-            return x, x_h
+        # Always return jacobian for consistent return type (TorchScript requirement)
+        return x, x_h, jacobian
 
 class PredictiveModuleMIMO(nn.Module):
     def __init__(self, channel_in, nf, block_num_rbm=8, block_num_trans=4):
@@ -553,32 +571,47 @@ class VSN(nn.Module):
             self.BitPM = PredictiveModuleBit(3, 4, block_num_rbm=4, block_num_trans=2)
 
 
-    def forward(self, x, x_h=None, message=None, rev=False, hs=[], direction='f'):
+    def forward(self, x, x_h=None, message=None, rev: bool = False, hs=None, direction: str = 'f'):
+        if hs is None:
+            hs = []
+        
         if not rev:
             if self.mode == "image":
-                out_y, out_y_h = self.irn(x, x_h, rev)
+                out_y, out_y_h, _ = self.irn(x, x_h, rev)
                 out_y = iwt(out_y)
                 encoded_image = self.bitencoder(out_y, message)          
-                return out_y, encoded_image
+                # Return 4 values for consistency: (out_y, encoded_image, out_y_h, out_y_h)
+                return out_y, encoded_image, out_y_h, out_y_h
             
             elif self.mode == "bit":
                 out_y = iwt(x)
                 encoded_image = self.bitencoder(out_y, message)            
-                return out_y, encoded_image
+                # Return 4 values for consistency: (out_y, encoded_image, out_y, out_y)
+                return out_y, encoded_image, out_y, out_y
+            else:
+                # Should not reach here, but needed for TorchScript
+                return x, x, x, x
 
         else:
             if self.mode == "image":
                 recmessage = self.bitdecoder(x)
 
-                x = dwt(x)
-                out_z = self.pm(x).unsqueeze(1)
-                out_z_new = out_z.view(-1, self.num_image, self.channel_in, x.shape[-2], x.shape[-1])
-                out_z_new = [out_z_new[:,i] for i in range(self.num_image)]
-                out_x, out_x_h = self.irn(x, out_z_new, rev)
+                x_dwt = dwt(x)
+                out_z = self.pm(x_dwt).unsqueeze(1)
+                out_z_new = out_z.view(-1, self.num_image, self.channel_in, x_dwt.shape[-2], x_dwt.shape[-1])
+                # TorchScript-compatible: use unbind instead of list comprehension
+                out_z_list = torch.unbind(out_z_new, dim=1)
+                # Convert tuple to list for compatibility
+                out_z_new_list = list(out_z_list)
+                out_x, out_x_h, _ = self.irn(x_dwt, out_z_new_list[0] if len(out_z_new_list) > 0 else x_dwt, rev)
 
                 return out_x, out_x_h, out_z, recmessage
             
             elif self.mode == "bit":
                 recmessage = self.bitdecoder(x)
-                return recmessage
+                # Return 4 values for consistency
+                return recmessage, recmessage, recmessage, recmessage
+            else:
+                # Should not reach here, but needed for TorchScript
+                return x, x, x, x
 

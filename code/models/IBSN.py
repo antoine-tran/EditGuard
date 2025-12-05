@@ -35,7 +35,7 @@ class Model_VSN(BaseModel):
     def __init__(self, opt):
         super(Model_VSN, self).__init__(opt)
 
-        if opt['dist']:
+        if opt.get('dist', False):
             self.rank = torch.distributed.get_rank()
         else:
             self.rank = -1  # non dist training
@@ -77,7 +77,8 @@ class Model_VSN(BaseModel):
 
         if self.opt['sdinpaint']:
             self.pipe = StableDiffusionInpaintPipeline.from_pretrained(
-                "stabilityai/stable-diffusion-2-inpainting",
+                # "stabilityai/stable-diffusion-2-inpainting",
+                "philschmid/stable-diffusion-2-inpainting-endpoint",
                 torch_dtype=torch.float16,
             ).to("cuda")
         

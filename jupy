@@ -1,0 +1,2 @@
+export TORCH_DISTRIBUTED_DEBUG=OFF
+python -m jupyter lab --ip 0.0.0.0 --no-browser --port ${1}

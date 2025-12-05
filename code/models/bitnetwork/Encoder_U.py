@@ -121,5 +121,5 @@ class UP(nn.Module):
         self.conv = ConvBlock(in_channels, out_channels)
 
     def forward(self, x):
-        x = F.interpolate(x, scale_factor=2, mode='nearest')
+        x = F.interpolate(x, scale_factor=2.0, mode='nearest')
         return self.conv(x)

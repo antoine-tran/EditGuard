@@ -1,0 +1,4 @@
+dataset/valAGE-*
+**/__pycache__/
+checkpoints/*.pth
+code/results/
